@@ -19,6 +19,7 @@
                 android:id="@+id/toolbar"
                 android:layout_width="match_parent"
                 android:layout_height="?attr/actionBarSize"
+                android:nextFocusDown="@+id/tabLayout"
                 app:title="@string/app_name"
                 app:logoDescription="@string/app_name" />
 
@@ -26,6 +27,8 @@
                 android:id="@+id/tabLayout"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:nextFocusUp="@+id/toolbar"
+                android:nextFocusDown="@+id/viewPager"
                 app:tabMode="fixed"
                 app:tabGravity="fill" />
         </com.google.android.material.appbar.AppBarLayout>
@@ -34,6 +37,7 @@
             android:id="@+id/viewPager"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
+            android:nextFocusUp="@+id/tabLayout"
             app:layout_behavior="@string/appbar_scrolling_view_behavior" />
 
     </androidx.coordinatorlayout.widget.CoordinatorLayout>

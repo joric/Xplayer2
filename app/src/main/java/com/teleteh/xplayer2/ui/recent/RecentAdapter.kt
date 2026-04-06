@@ -3,6 +3,7 @@ package com.teleteh.xplayer2.ui.recent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -37,7 +38,25 @@ class RecentAdapter(
         val sbsState: TextView? = view.findViewById(R.id.tvSbsState)
 
         init {
+
+            view.isFocusable = true
+            view.isFocusableInTouchMode = true
+            view.isLongClickable = false
+
+            // This ensures D-pad can navigate to items
             view.setOnClickListener { onClick(bindingAdapterPosition) }
+            
+            // Single-tap activation without double-click requirement
+            view.setOnTouchListener { v, event ->
+                if (event.action == MotionEvent.ACTION_UP) {
+                    v.requestFocus()
+                    v.performClick()
+                    true
+                } else {
+                    false
+                }
+            }
+            
             view.findViewById<View?>(R.id.btnDelete)?.setOnClickListener {
                 onDeleteIdx(bindingAdapterPosition)
             }
@@ -64,7 +83,6 @@ class RecentAdapter(
                 append(formatMs(item.durationMs))
             }
         }
-        
         // Source icon based on type
         val sourceType = item.sourceType ?: RecentEntry.detectSourceType(Uri.parse(item.uri))
         val iconRes = when (sourceType) {

@@ -14,6 +14,7 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.view.KeyEvent
 import android.provider.OpenableColumns
 import android.view.LayoutInflater
 import android.view.Menu
@@ -302,6 +303,51 @@ class PlayerActivity : AppCompatActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemBars()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        val overlay = playerView.findViewById<android.widget.FrameLayout>(androidx.media3.ui.R.id.exo_overlay)
+        val isUiVisible = overlay?.visibility == View.VISIBLE
+
+        return when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_CENTER -> {
+                // Toggle overlay visibility
+                playerView.controllerAutoShow = !playerView.controllerAutoShow
+                if (isUiVisible) {
+                    overlay?.visibility = View.GONE
+                } else {
+                    playerView.showController()
+                }
+                true
+            }
+            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                // Only handle if UI is not focused (no button has focus)
+                if (currentFocus == null || currentFocus === playerView || currentFocus === glView) {
+                    seekRelative(-5000L) // rewind 5 seconds
+                    return true
+                }
+                super.onKeyDown(keyCode, event)
+            }
+            KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                // Only handle if UI is not focused (no button has focus)
+                if (currentFocus == null || currentFocus === playerView || currentFocus === glView) {
+                    seekRelative(-15000L) // rewind 15 seconds
+                    return true
+                }
+                super.onKeyDown(keyCode, event)
+            }
+            KeyEvent.KEYCODE_BACK -> {
+                // If UI is visible, close it; otherwise exit player
+                if (isUiVisible) {
+                    overlay?.visibility = View.GONE
+                    playerView.controllerAutoShow = false
+                    return true
+                }
+                // Otherwise fall through to normal back handling
+                super.onKeyDown(keyCode, event)
+            }
+            else -> super.onKeyDown(keyCode, event)
+        }
     }
 
     private fun initializePlayer() {
@@ -1041,14 +1087,12 @@ class PlayerActivity : AppCompatActivity() {
         btn.isChecked = checked
         if (!checked) {
             // When OFF -> outlined
-            btn.backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
             btn.setTextColor(Color.WHITE)
             btn.strokeColor = ColorStateList.valueOf(Color.WHITE)
             val px = (2 * resources.displayMetrics.density).toInt()
             btn.strokeWidth = px
         } else {
             // When ON -> filled
-            btn.backgroundTintList = ColorStateList.valueOf("#2196F3".toColorInt())
             btn.setTextColor(Color.WHITE)
             btn.strokeColor = ColorStateList.valueOf(Color.TRANSPARENT)
             btn.strokeWidth = 0

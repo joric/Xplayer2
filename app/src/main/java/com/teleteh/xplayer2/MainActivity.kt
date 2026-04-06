@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.os.Build
 import android.os.Bundle
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
@@ -19,10 +20,116 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.tabs.TabLayoutMediator
 import com.teleteh.xplayer2.databinding.ActivityMainBinding
 import com.teleteh.xplayer2.ui.MainPagerAdapter
+import android.view.KeyEvent
+import android.widget.Button
+import android.widget.EditText
+import android.view.ViewGroup
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
+
+    private fun focusActiveTab() {
+        val index = binding.viewPager.currentItem.coerceAtLeast(0)
+        val activeTabView = binding.tabLayout.getTabAt(index)?.view
+        if (activeTabView != null && activeTabView !== currentFocus) {
+            activeTabView.requestFocus()
+        }
+    }
+
+    private fun isDescendantOf(child: View?, ancestor: View): Boolean {
+        var current = child
+        while (current != null) {
+            if (current === ancestor) return true
+            val parent = current.parent
+            current = if (parent is View) parent else null
+        }
+        return false
+    }
+
+    private fun shouldReturnToTabsOnUp(fragmentView: View): Boolean {
+        val focused = currentFocus ?: return false
+
+        val filesButton: Button? = fragmentView.findViewById(R.id.btnOpen)
+        if (focused === filesButton) return true
+
+        val networkInput: EditText? = fragmentView.findViewById(R.id.etUrl)
+        if (focused === networkInput) return true
+
+        val networkButton: Button? = fragmentView.findViewById(R.id.btnOpenUrl)
+        if (focused === networkButton) return true
+
+        val recyclerView: RecyclerView? = fragmentView.findViewById<RecyclerView?>(R.id.rvRecent)
+            ?: fragmentView.findViewById<RecyclerView?>(R.id.rvNetwork)
+        if (recyclerView != null && isDescendantOf(focused, recyclerView)) {
+            val lm = recyclerView.layoutManager as? LinearLayoutManager
+            val atTop = lm?.findFirstVisibleItemPosition()?.let { it <= 0 } == true
+            if (atTop) return true
+        }
+
+        return false
+    }
+
+    private fun isActuallyFocusable(view: View): Boolean {
+        if (!view.isFocusable || !view.isFocusableInTouchMode || !view.isEnabled) return false
+        if (view.visibility != View.VISIBLE || !view.isShown) return false
+        if (view.width <= 0 || view.height <= 0 || view.alpha <= 0f) return false
+        return true
+    }
+
+    private fun findFirstFocusable(view: View): View? {
+        if (isActuallyFocusable(view)) return view
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                val child = findFirstFocusable(view.getChildAt(i))
+                if (child != null) return child
+            }
+        }
+        return null
+    }
+
+    private fun focusFirstVisibleControl(fragmentView: View): Boolean {
+        val filesButton: Button? = fragmentView.findViewById(R.id.btnOpen)
+        if (filesButton != null && isActuallyFocusable(filesButton)) {
+            filesButton.requestFocus()
+            return true
+        }
+
+        val networkInput: EditText? = fragmentView.findViewById(R.id.etUrl)
+        if (networkInput != null && isActuallyFocusable(networkInput)) {
+            networkInput.requestFocus()
+            return true
+        }
+
+        val networkButton: Button? = fragmentView.findViewById(R.id.btnOpenUrl)
+        if (networkButton != null && isActuallyFocusable(networkButton)) {
+            networkButton.requestFocus()
+            return true
+        }
+
+        val recyclerView: RecyclerView? = fragmentView.findViewById<RecyclerView?>(R.id.rvRecent)
+            ?: fragmentView.findViewById<RecyclerView?>(R.id.rvNetwork)
+        if (recyclerView != null && isActuallyFocusable(recyclerView) && recyclerView.childCount > 0) {
+            val firstVisibleChild = recyclerView.getChildAt(0)
+            if (firstVisibleChild != null && isActuallyFocusable(firstVisibleChild)) {
+                firstVisibleChild.requestFocus()
+                return true
+            }
+            recyclerView.requestFocus()
+            return true
+        }
+
+        val fallback = findFirstFocusable(fragmentView)
+        if (fallback != null) {
+            fallback.requestFocus()
+            return true
+        }
+
+        return false
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,7 +171,65 @@ class MainActivity : AppCompatActivity() {
         val tabTitles = listOf("Недавние", "Файлы", "Сеть")
         TabLayoutMediator(binding.tabLayout, viewPager) { tab, position ->
             tab.text = tabTitles[position]
+            tab.contentDescription = null
         }.attach()
+
+        binding.tabLayout.isFocusable = true
+        binding.tabLayout.isFocusableInTouchMode = true
+        binding.tabLayout.setOnFocusChangeListener { _, hasFocus ->
+            if (hasFocus) {
+                // Redirect container focus to the currently selected tab button.
+                binding.tabLayout.post { focusActiveTab() }
+            }
+        }
+
+        for (i in 0 until binding.tabLayout.tabCount) {
+            val tabView = binding.tabLayout.getTabAt(i)?.view
+            tabView?.isFocusable = true
+            tabView?.isFocusableInTouchMode = true
+            tabView?.isLongClickable = true
+            tabView?.setOnLongClickListener { v ->
+                v.requestFocus()
+                binding.tabLayout.getTabAt(i)?.select()
+                v.performClick()
+                true
+            }
+            tabView?.tooltipText = null
+            tabView?.setOnTouchListener { v, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    v.requestFocus()
+                }
+                false
+            }
+            tabView?.setOnClickListener { v ->
+                v.requestFocus()
+                binding.tabLayout.getTabAt(i)?.select()
+            }
+            tabView?.setOnKeyListener { _, keyCode, event ->
+                if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    val fragment = supportFragmentManager.findFragmentByTag("f${binding.viewPager.currentItem}")
+                    val fragmentView = fragment?.view
+
+                    if (fragmentView != null && focusFirstVisibleControl(fragmentView)) {
+                        fragmentView.playSoundEffect(android.view.SoundEffectConstants.NAVIGATION_DOWN)
+                    }
+                    return@setOnKeyListener true
+                }
+                false
+            }
+        }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            val fragment = supportFragmentManager.findFragmentByTag("f${binding.viewPager.currentItem}")
+            val fragmentView = fragment?.view
+            if (fragmentView != null && shouldReturnToTabsOnUp(fragmentView)) {
+                focusActiveTab()
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun setupEdgeToEdge() {

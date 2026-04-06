@@ -11,6 +11,7 @@ import com.teleteh.xplayer2.R
 import com.teleteh.xplayer2.data.RecentStore
 import com.teleteh.xplayer2.player.PlayerActivity
 import com.teleteh.xplayer2.ui.util.DisplayUtils
+import android.view.ViewGroup
 
 class RecentFragment : Fragment(R.layout.fragment_recent) {
     private lateinit var recycler: RecyclerView
@@ -55,8 +56,15 @@ class RecentFragment : Fragment(R.layout.fragment_recent) {
             RecentStore(requireContext()).delete(entry.uri)
             loadData()
         })
+
         recycler.layoutManager = LinearLayoutManager(requireContext())
         recycler.adapter = adapter
+
+        // Configure RecyclerView for D-pad navigation
+        recycler.isFocusable = true
+        recycler.isFocusableInTouchMode = true
+        recycler.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+
         loadData()
     }
 

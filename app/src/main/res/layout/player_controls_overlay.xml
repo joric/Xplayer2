@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<merge xmlns:android="http://schemas.android.com/apk/res/android">
+<merge xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
 
     <LinearLayout
         android:id="@+id/controlsTopBar"
@@ -16,6 +17,7 @@
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:layout_width="wrap_content"
             android:layout_height="36dp"
+            app:backgroundTint="@color/player_overlay_button_bg"
             android:text="Back"
             android:textAllCaps="false"
             android:textColor="@android:color/white" />
@@ -46,6 +48,7 @@
             android:layout_height="36dp"
             android:insetLeft="8dp"
             android:insetRight="8dp"
+            app:backgroundTint="@color/player_sbs_button_bg"
             android:text="OU➤SBS"
             android:textAllCaps="false"
             android:textColor="@android:color/white"
@@ -58,6 +61,7 @@
             android:layout_height="36dp"
             android:insetLeft="8dp"
             android:insetRight="8dp"
+            app:backgroundTint="@color/player_overlay_button_bg"
             android:text="Shift"
             android:textAllCaps="false"
             android:textColor="@android:color/white"
@@ -68,7 +72,8 @@
             android:layout_width="36dp"
             android:layout_height="36dp"
             android:layout_marginStart="8dp"
-            android:background="@android:color/transparent"
+            android:background="@drawable/player_icon_button_bg"
+            android:backgroundTint="@color/player_overlay_button_bg"
             android:contentDescription="@string/select_audio_track"
             android:scaleType="centerInside"
             android:src="@drawable/ear_sound_24px"

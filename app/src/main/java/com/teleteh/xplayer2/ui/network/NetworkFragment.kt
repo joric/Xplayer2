@@ -6,6 +6,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.text.InputType
+import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.Button
@@ -30,7 +31,6 @@ import com.teleteh.xplayer2.ui.util.DisplayUtils
 import kotlinx.coroutines.launch
 
 class NetworkFragment : Fragment(R.layout.fragment_network) {
-
     private lateinit var rv: RecyclerView
     private lateinit var adapter: NetworkAdapter
     private lateinit var smbStorage: SmbStorage
@@ -74,14 +74,57 @@ class NetworkFragment : Fragment(R.layout.fragment_network) {
         }
 
         btnOpen.setOnClickListener { tryOpen(etUrl.text?.toString()) }
+        btnOpen.isFocusable = true
+        btnOpen.isFocusableInTouchMode = true
+        btnOpen.isLongClickable = false
+        
+        // Single-tap activation without double-click requirement
+        btnOpen.setOnTouchListener { v, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                v.requestFocus()
+                v.performClick()
+                true
+            } else {
+                false
+            }
+        }
+        
         etUrl.setOnEditorActionListener { _, actionId, _ ->
             if (actionId == EditorInfo.IME_ACTION_DONE) {
                 tryOpen(etUrl.text?.toString())
                 true
             } else false
         }
+        etUrl.isFocusable = true
+        etUrl.isFocusableInTouchMode = true
+        etUrl.isLongClickable = false
+        
+        // Single-tap activation for EditText
+        etUrl.setOnTouchListener { v, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                v.requestFocus()
+                v.performClick()
+                true
+            } else {
+                false
+            }
+        }
 
         fab.setOnClickListener { showAddSmbDialog() }
+        fab.isFocusable = true
+        fab.isFocusableInTouchMode = true
+        fab.isLongClickable = false
+        
+        // Single-tap activation for FAB
+        fab.setOnTouchListener { v, event ->
+            if (event.action == MotionEvent.ACTION_UP) {
+                v.requestFocus()
+                v.performClick()
+                true
+            } else {
+                false
+            }
+        }
 
         // Initial content: saved SMB shares
         reloadShares()

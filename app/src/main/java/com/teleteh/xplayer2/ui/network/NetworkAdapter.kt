@@ -2,6 +2,7 @@ package com.teleteh.xplayer2.ui.network
 
 import android.net.Uri
 import android.view.LayoutInflater
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
@@ -57,7 +58,19 @@ class NetworkAdapter(
         private var current: NetworkItem? = null
 
         init {
+            itemView.isLongClickable = false
             itemView.setOnClickListener { current?.let(onClick) }
+            
+            // Single-tap activation without double-click requirement
+            itemView.setOnTouchListener { v, event ->
+                if (event.action == MotionEvent.ACTION_UP) {
+                    v.requestFocus()
+                    v.performClick()
+                    true
+                } else {
+                    false
+                }
+            }
         }
 
         fun bind(item: NetworkItem) {
