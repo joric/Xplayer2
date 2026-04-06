@@ -305,9 +305,33 @@ class PlayerActivity : AppCompatActivity() {
         if (hasFocus) hideSystemBars()
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val overlay = playerView.findViewById<android.widget.FrameLayout>(androidx.media3.ui.R.id.exo_overlay)
+        val isUiVisible = overlay?.visibility == View.VISIBLE
+        val isControllerVisible = playerView.isControllerFullyVisible
+        val isAudioMenuVisible = audioMenuRoot?.visibility == View.VISIBLE
+        val isPlaybackUiHidden = !isUiVisible && !isControllerVisible && !isAudioMenuVisible
+
+        if (isPlaybackUiHidden && (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                if (event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                    seekRelative(-5000L)
+                } else {
+                    seekRelative(15000L)
+                }
+            }
+            // Consume both DOWN and UP so PlayerView cannot auto-show the controller.
+            return true
+        }
+
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         val overlay = playerView.findViewById<android.widget.FrameLayout>(androidx.media3.ui.R.id.exo_overlay)
         val isUiVisible = overlay?.visibility == View.VISIBLE
+        val isControllerVisible = playerView.isControllerFullyVisible
+        val isAudioMenuVisible = audioMenuRoot?.visibility == View.VISIBLE
 
         return when (keyCode) {
             KeyEvent.KEYCODE_DPAD_CENTER -> {
@@ -321,26 +345,26 @@ class PlayerActivity : AppCompatActivity() {
                 true
             }
             KeyEvent.KEYCODE_DPAD_LEFT -> {
-                // Only handle if UI is not focused (no button has focus)
-                if (currentFocus == null || currentFocus === playerView || currentFocus === glView) {
+                // When playback UI is hidden, consume LEFT and seek without opening controls.
+                if (!isUiVisible && !isControllerVisible && !isAudioMenuVisible) {
                     seekRelative(-5000L) // rewind 5 seconds
                     return true
                 }
                 super.onKeyDown(keyCode, event)
             }
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                // Only handle if UI is not focused (no button has focus)
-                if (currentFocus == null || currentFocus === playerView || currentFocus === glView) {
-                    seekRelative(-15000L) // rewind 15 seconds
+                // When playback UI is hidden, consume RIGHT and seek without opening controls.
+                if (!isUiVisible && !isControllerVisible && !isAudioMenuVisible) {
+                    seekRelative(15000L) // forward 15 seconds
                     return true
                 }
                 super.onKeyDown(keyCode, event)
             }
             KeyEvent.KEYCODE_BACK -> {
-                // If UI is visible, close it; otherwise exit player
-                if (isUiVisible) {
-                    overlay?.visibility = View.GONE
-                    playerView.controllerAutoShow = false
+                // Match timeout behavior: hide the entire playback UI immediately.
+                if (isUiVisible || isControllerVisible || isAudioMenuVisible) {
+                    hideAudioMenu()
+                    playerView.hideController()
                     return true
                 }
                 // Otherwise fall through to normal back handling
