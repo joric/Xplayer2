@@ -15,6 +15,7 @@ enum class SourceType {
 
 data class RecentEntry(
     val uri: String,
+    val fallbackUri: String? = null,
     val title: String,
     val lastPositionMs: Long,
     val durationMs: Long,
@@ -25,6 +26,7 @@ data class RecentEntry(
     val sourceType: SourceType? = null
 ) {
     fun uriObj(): Uri = Uri.parse(uri)
+    fun fallbackUriObj(): Uri? = fallbackUri?.let(Uri::parse)
     
     companion object {
         /**

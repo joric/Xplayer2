@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- TV feature declarations -->
     <uses-feature 
@@ -8,6 +9,13 @@
     <uses-feature 
         android:name="android.hardware.touchscreen" 
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false"
+        tools:replace="android:required" />
     
     <!-- Screen size support to help with TV categorization -->
     <supports-screens
@@ -35,7 +43,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.XPlayer2"
         android:usesCleartextTraffic="true"
-        android:largeHeap="true">
+        android:largeHeap="true"
+        android:extractNativeLibs="true"
+        tools:replace="android:theme">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -51,6 +61,7 @@
             android:exported="true"
             android:grantUriPermissions="true"
             android:screenOrientation="sensorLandscape"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|density"
             android:resizeableActivity="true"
             android:supportsPictureInPicture="true"
             android:theme="@style/Theme.XPlayer2.Fullscreen">

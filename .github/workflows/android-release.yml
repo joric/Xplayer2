@@ -29,6 +29,13 @@ jobs:
       - name: Accept licenses
         run: yes | sdkmanager --licenses
 
+      - name: Download and extract VITURE SDK
+        run: |
+          curl -L -o viture_sdk.tar.xz https://static.viture.dev/external-file/sdk/viture_android_sdk_v1.0.7.tar.xz
+          tar -xf viture_sdk.tar.xz
+          mkdir -p app/libs
+          cp aar/VITURE-SDK-1.0.7.aar app/libs/
+
       - name: Decode keystore
         shell: bash
         env:
@@ -46,11 +53,15 @@ jobs:
 
       - name: Rename APK
         run: |
-          TAG="${GITHUB_REF_NAME:-dev}"
-          mv app/build/outputs/apk/release/app-release.apk "app/build/outputs/apk/release/XPlayer2-${TAG}.apk"
+          mv app/build/outputs/apk/release/app-release.apk "app/build/outputs/apk/release/XPlayer2-${GITHUB_REF_NAME}.apk"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: XPlayer2-${{ github.ref_name }}
           path: app/build/outputs/apk/release/XPlayer2-*.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/XPlayer2-${{ github.ref_name }}.apk

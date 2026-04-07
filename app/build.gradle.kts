@@ -55,6 +55,11 @@ android {
     buildFeatures {
         viewBinding = true
     }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
@@ -79,6 +84,7 @@ dependencies {
     implementation(libs.coil)
     // Local Media3 FFmpeg decoder module
     implementation(project(":media3-lib-decoder-ffmpeg"))
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

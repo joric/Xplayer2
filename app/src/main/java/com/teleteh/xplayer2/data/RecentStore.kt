@@ -39,7 +39,10 @@ class RecentStore(private val context: Context) {
 
     fun upsert(newEntry: RecentEntry, maxItems: Int = 50) {
         val current = getAll().toMutableList()
-        val existingIdx = current.indexOfFirst { it.uri == newEntry.uri }
+        val newUris = setOfNotNull(newEntry.uri, newEntry.fallbackUri)
+        val existingIdx = current.indexOfFirst { existing ->
+            setOfNotNull(existing.uri, existing.fallbackUri).any { it in newUris }
+        }
         if (existingIdx >= 0) current.removeAt(existingIdx)
         current.add(0, newEntry)
         while (current.size > maxItems) current.removeAt(current.lastIndex)
@@ -48,7 +51,7 @@ class RecentStore(private val context: Context) {
         prefs.edit().putString(KEY_ITEMS, arr.toString()).apply()
     }
 
-    fun find(uri: String): RecentEntry? = getAll().firstOrNull { it.uri == uri }
+    fun find(uri: String): RecentEntry? = getAll().firstOrNull { it.uri == uri || it.fallbackUri == uri }
 
     fun delete(uri: String) {
         val current = getAll().toMutableList()
@@ -74,6 +77,7 @@ class RecentStore(private val context: Context) {
         
         RecentEntry(
             uri = uriStr,
+            fallbackUri = optString("fallbackUri", "").takeIf { it.isNotBlank() },
             title = optString("title", ""),
             lastPositionMs = optLong("lastPositionMs", 0L),
             durationMs = optLong("durationMs", 0L),
@@ -89,6 +93,7 @@ class RecentStore(private val context: Context) {
 
     private fun RecentEntry.toJson(): JSONObject = JSONObject().apply {
         put("uri", uri)
+        if (!fallbackUri.isNullOrBlank()) put("fallbackUri", fallbackUri)
         put("title", title)
         put("lastPositionMs", lastPositionMs)
         put("durationMs", durationMs)

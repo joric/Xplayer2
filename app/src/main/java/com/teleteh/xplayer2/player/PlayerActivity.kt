@@ -14,6 +14,9 @@ import android.content.ServiceConnection
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.KeyEvent
 import android.provider.OpenableColumns
 import android.view.LayoutInflater
@@ -60,6 +63,9 @@ import android.graphics.Typeface
 import android.widget.ScrollView
 import android.util.TypedValue
 import com.google.android.material.button.MaterialButton
+import com.viture.sdk.ArCallback
+import com.viture.sdk.ArManager
+import com.viture.sdk.Constants
 import com.teleteh.xplayer2.MainActivity
 import com.teleteh.xplayer2.R
 import com.teleteh.xplayer2.data.RecentEntry
@@ -75,6 +81,16 @@ class PlayerActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_START_POSITION_MS = "start_position_ms"
         const val EXTRA_TITLE = "title"
+        const val EXTRA_RECENT_URI = "recent_uri"
+        const val EXTRA_RECENT_FALLBACK_URI = "recent_fallback_uri"
+        private const val VITURE_INIT_STATE_IDLE = Int.MIN_VALUE
+        private const val VITURE_INIT_WAIT_DELAY_MS = 150L
+        private const val VITURE_INIT_WAIT_MAX_ATTEMPTS = 40
+        private const val STATE_SOURCE_URI = "state_source_uri"
+        private const val PREFS_PLAYER = "player_prefs"
+        private const val PREF_LAST_SOURCE_URI = "last_source_uri"
+        private var lastKnownSourceUri: String? = null
+        private var vitureRecoveryToken: Long = 0L
         
         // Current instance for remote control access
         var currentInstance: PlayerActivity? = null
@@ -87,6 +103,8 @@ class PlayerActivity : AppCompatActivity() {
         intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         DisplayUtils.startOnPrimaryDisplay(this, intent)
         // If we explicitly leave playback, dismiss the external presentation so the second screen clears
+        pendingVitureToggle = false
+        vitureRecoveryToken++
         dismissPresentation()
         finish()
     }
@@ -101,10 +119,22 @@ class PlayerActivity : AppCompatActivity() {
     private var displayListener: DisplayManager.DisplayListener? = null
     private var routeCallback: MediaRouter.SimpleCallback? = null
     private var sourceUri: Uri? = null
+    private var recentPrimaryUri: Uri? = null
+    private var recentFallbackUri: Uri? = null
     private var titleCenterView: TextView? = null
     private var currentResolvedTitle: String? = null
     private var btnSbsRef: MaterialButton? = null
     private var btnShiftRef: MaterialButton? = null
+    private var btn3dRef: MaterialButton? = null
+    // VITURE glasses SDK
+    private var mArManager: ArManager? = null
+    private var mArCallback: ArCallback? = null
+    private var vitureCallbackRegistered: Boolean = false
+    private var mSdkInitSuccess: Int = VITURE_INIT_STATE_IDLE
+    private var vitureInitRetryToken: Long = 0L
+    private var pendingVitureToggle: Boolean = false
+    private var viturePermissionDialogPending: Boolean = false
+    private var vitureModeSwitchUntilMs: Long = 0L
     private var audioMenuRoot: android.widget.FrameLayout? = null
     private var audioMenuCenter: LinearLayout? = null
     private var audioMenuLeft: LinearLayout? = null
@@ -136,6 +166,67 @@ class PlayerActivity : AppCompatActivity() {
     private var extractedTitle: String? = null
     // Flag to prevent premature player initialization during stream extraction
     private var isExtractingStream: Boolean = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun isVitureModeSwitchInProgress(): Boolean {
+        return SystemClock.elapsedRealtime() < vitureModeSwitchUntilMs
+    }
+
+    private fun persistSourceUriPermissionIfPossible(uri: Uri?) {
+        if (uri == null || uri.scheme != "content") return
+        val grantFlags = (intent?.flags ?: 0) and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        if ((grantFlags and Intent.FLAG_GRANT_READ_URI_PERMISSION) == 0) return
+        try {
+            contentResolver.takePersistableUriPermission(uri, grantFlags)
+            android.util.Log.i("XPlayer2", "Persisted URI permission for $uri")
+        } catch (_: SecurityException) {
+            // Not all content URIs are persistable; ignore when provider doesn't support it.
+        } catch (_: Throwable) {
+            // Best effort only.
+        }
+    }
+
+    private fun scheduleVitureRecoveryRestart() {
+        val uri = sourceUri ?: return
+        val positionMs = player?.currentPosition?.coerceAtLeast(0L) ?: 0L
+        val title = currentResolvedTitle
+        val token = ++vitureRecoveryToken
+        val appContext = applicationContext
+        mainHandler.postDelayed({
+            if (token != vitureRecoveryToken) return@postDelayed
+            val active = currentInstance
+            if (active != null && !active.isFinishing && active.player != null) {
+                return@postDelayed
+            }
+            val restartIntent = Intent(appContext, PlayerActivity::class.java).apply {
+                data = uri
+                putExtra(EXTRA_START_POSITION_MS, positionMs)
+                if (!title.isNullOrBlank()) {
+                    putExtra(EXTRA_TITLE, title)
+                }
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            appContext.startActivity(restartIntent)
+        }, 3200L)
+    }
+
+    private fun syncViture3dButton() {
+        val mgr = mArManager ?: return
+        if (mSdkInitSuccess != Constants.ERROR_INIT_SUCCESS) return
+        btn3dRef?.isChecked = (mgr.get3DState() == Constants.STATE_ON)
+    }
+
+    private fun decodeLittleEndianInt(bytes: ByteArray): Int {
+        var value = 0
+        val right = minOf(bytes.size, 4)
+        for (index in 0 until right) {
+            value += (bytes[index].toInt() and 0xFF) shl (index * 8)
+        }
+        return value
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -177,9 +268,11 @@ class PlayerActivity : AppCompatActivity() {
         val btnBack = overlay.findViewById<MaterialButton>(R.id.btnBack)
         val btnSbs = overlay.findViewById<MaterialButton>(R.id.btnSbs)
         val btnShift = overlay.findViewById<MaterialButton>(R.id.btnShift)
+        val btn3d = overlay.findViewById<MaterialButton>(R.id.btn3d)
         val btnAudio = overlay.findViewById<ImageButton>(R.id.btnAudio)
         btnSbsRef = btnSbs
         btnShiftRef = btnShift
+        btn3dRef = btn3d
         titleCenterView = overlay.findViewById(R.id.tvTitleCenter)
         // Audio menu containers
         audioMenuRoot = overlay.findViewById(R.id.audioMenuRoot)
@@ -204,6 +297,13 @@ class PlayerActivity : AppCompatActivity() {
             applySbsShiftIfNeeded()
             // Persist per-item shift state
             saveProgress()
+        }
+        // 3D button for VITURE glasses
+        btn3d.isCheckable = true
+        btn3d.isEnabled = true
+        btn3d.alpha = 1f
+        btn3d.setOnClickListener {
+            handle3DButtonClick()
         }
         btnAudio.setOnClickListener { showAudioMenu() }
         // Configure controllers with same behavior
@@ -242,9 +342,28 @@ class PlayerActivity : AppCompatActivity() {
             else -> intent?.data
         }
         if (sourceUri == null) {
+            sourceUri = savedInstanceState?.getString(STATE_SOURCE_URI)?.let { Uri.parse(it) }
+        }
+        if (sourceUri == null) {
+            sourceUri = lastKnownSourceUri?.let { Uri.parse(it) }
+        }
+        if (sourceUri == null) {
+            val cached = getSharedPreferences(PREFS_PLAYER, MODE_PRIVATE)
+                .getString(PREF_LAST_SOURCE_URI, null)
+            sourceUri = cached?.let { Uri.parse(it) }
+        }
+        if (sourceUri == null) {
+            android.util.Log.w("XPlayer2", "PlayerActivity started without source URI; ignoring instead of finishing")
             finish()
             return
         }
+        recentPrimaryUri = intent?.getStringExtra(EXTRA_RECENT_URI)?.let(Uri::parse) ?: sourceUri
+        recentFallbackUri = intent?.getStringExtra(EXTRA_RECENT_FALLBACK_URI)?.let(Uri::parse)
+        lastKnownSourceUri = sourceUri?.toString()
+        getSharedPreferences(PREFS_PLAYER, MODE_PRIVATE).edit {
+            putString(PREF_LAST_SOURCE_URI, sourceUri?.toString())
+        }
+        persistSourceUriPermissionIfPossible(sourceUri)
 
         // Check if URL needs stream extraction (ok.ru, vkvideo, etc.)
         val uri = sourceUri!!
@@ -291,13 +410,216 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    private fun handle3DButtonClick() {
+        pendingVitureToggle = true
+        val token = ++vitureInitRetryToken
+        handle3DButtonClickInternal(token, 0, false)
+    }
+
+    private fun handle3DButtonClickInternal(token: Long, attempt: Int, didHardReset: Boolean) {
+        if (token != vitureInitRetryToken) return
+        if (!pendingVitureToggle) return
+        if (!ensureVitureInitialized()) {
+            pendingVitureToggle = false
+            showVitureInitErrorToast(mSdkInitSuccess)
+            return
+        }
+        val mgr = mArManager
+        if (mgr == null) {
+            pendingVitureToggle = false
+            android.widget.Toast.makeText(this, "VITURE SDK unavailable", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (viturePermissionDialogPending || mSdkInitSuccess == Constants.ERROR_INIT_NO_PERMISSION) {
+            return
+        }
+
+        if (mSdkInitSuccess != Constants.ERROR_INIT_SUCCESS) {
+            if (mSdkInitSuccess != Constants.ERROR_INIT_NO_DEVICE && attempt < VITURE_INIT_WAIT_MAX_ATTEMPTS) {
+                mainHandler.postDelayed({
+                    if (token != vitureInitRetryToken) return@postDelayed
+                    handle3DButtonClickInternal(token, attempt + 1, didHardReset)
+                }, VITURE_INIT_WAIT_DELAY_MS)
+                return
+            }
+            pendingVitureToggle = false
+            showVitureInitErrorToast(mSdkInitSuccess)
+            return
+        }
+
+        val currentStateCode = try {
+            mgr.get3DState()
+        } catch (_: Throwable) {
+            Int.MIN_VALUE
+        }
+
+        if (currentStateCode != Constants.STATE_ON && currentStateCode != Constants.STATE_OFF) {
+            if (!didHardReset) {
+                resetVitureManager()
+                val retryToken = vitureInitRetryToken
+                mainHandler.postDelayed({
+                    if (retryToken != vitureInitRetryToken) return@postDelayed
+                    handle3DButtonClickInternal(retryToken, attempt + 1, true)
+                }, VITURE_INIT_WAIT_DELAY_MS)
+                return
+            }
+            pendingVitureToggle = false
+            android.widget.Toast.makeText(this, "VITURE glasses not responding", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val newState = currentStateCode != Constants.STATE_ON
+        val setResult = try {
+            mgr.set3D(newState)
+        } catch (_: Throwable) {
+            Int.MIN_VALUE
+        }
+        if (setResult == Constants.ERR_SET_SUCCESS) {
+            pendingVitureToggle = false
+            btn3dRef?.isChecked = newState
+            vitureModeSwitchUntilMs = SystemClock.elapsedRealtime() + 5000L
+            android.widget.Toast.makeText(this, "Restarting player...", android.widget.Toast.LENGTH_SHORT).show()
+            scheduleVitureRecoveryRestart()
+            return
+        }
+
+        if (!didHardReset) {
+            resetVitureManager()
+            val retryToken = vitureInitRetryToken
+            mainHandler.postDelayed({
+                if (retryToken != vitureInitRetryToken) return@postDelayed
+                handle3DButtonClickInternal(retryToken, attempt + 1, true)
+            }, VITURE_INIT_WAIT_DELAY_MS)
+            return
+        }
+
+        pendingVitureToggle = false
+        vitureRecoveryToken++
+        android.util.Log.w("XPlayer2", "VITURE set3D failed: code=$setResult")
+        android.widget.Toast.makeText(this, when (setResult) {
+            Constants.ERR_SET_UNSUPPORTED_CMD -> "VITURE 3D switch not supported"
+            Constants.ERR_SET_CODE_NOT_WRITTEN,
+            Constants.ERR_SET_FAILURE,
+            Constants.ERR_SET_CRC_MISMATCH,
+            Constants.ERR_SET_MSG_ID_MISMATCH,
+            Constants.ERR_SET_MSG_STX_MISMATCH,
+            Constants.ERR_SET_VER_MISMATCH,
+            Constants.ERR_SET_INVALID_ARGUMENT,
+            Constants.ERR_SET_NOT_ENOUGH_MEMORY -> "Failed to switch VITURE 2D/3D"
+            else -> "VITURE 2D/3D switch failed"
+        }, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
     private fun hideSystemBars() {
-        // Enter immersive fullscreen (hide status/navigation bars)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowInsetsControllerCompat(window, playerView)
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    private fun ensureVitureInitialized(): Boolean {
+        val mgr = mArManager
+        if (mgr != null && mSdkInitSuccess == Constants.ERROR_INIT_SUCCESS) {
+            val state = try { mgr.get3DState() } catch (_: Throwable) { Int.MIN_VALUE }
+            if (state == Constants.STATE_ON || state == Constants.STATE_OFF) return true
+            // Success flag with invalid runtime state means stale SDK handle.
+            resetVitureManager()
+        }
+
+        return try {
+            initVitureGlasses()
+            mArManager != null
+        } catch (e: Throwable) {
+            android.util.Log.w("XPlayer2", "VITURE SDK unavailable: ${e.message}")
+            btn3dRef?.isEnabled = true
+            btn3dRef?.alpha = 1f
+            false
+        }
+    }
+
+    private fun initVitureGlasses() {
+        val mgr = ArManager.getInstance(this)
+        mArManager = mgr
+        if (mArCallback == null) {
+            mArCallback = object : ArCallback() {
+                override fun onEvent(msgId: Int, event: ByteArray?, l: Long) {
+                    if (msgId == Constants.EVENT_ID_INIT && event != null && event.isNotEmpty()) {
+                        mSdkInitSuccess = decodeLittleEndianInt(event)
+                        runOnUiThread {
+                            viturePermissionDialogPending = false
+                            if (mSdkInitSuccess == Constants.ERROR_INIT_SUCCESS) {
+                                syncViture3dButton()
+                                if (pendingVitureToggle) {
+                                    val token = vitureInitRetryToken
+                                    mainHandler.post {
+                                        if (token != vitureInitRetryToken || !pendingVitureToggle) return@post
+                                        handle3DButtonClickInternal(token, 0, false)
+                                    }
+                                }
+                            } else if (pendingVitureToggle && mSdkInitSuccess != Constants.ERROR_INIT_NO_PERMISSION) {
+                                pendingVitureToggle = false
+                                showVitureInitErrorToast(mSdkInitSuccess)
+                            }
+                        }
+                    } else if (msgId == Constants.EVENT_ID_3D) {
+                        runOnUiThread {
+                            syncViture3dButton()
+                        }
+                    }
+                }
+                override fun onImu(ts: Long, imu: ByteArray?) {}
+            }
+        }
+        registerVitureCallbackIfNeeded()
+        mSdkInitSuccess = mgr.init()
+        viturePermissionDialogPending = mSdkInitSuccess == Constants.ERROR_INIT_NO_PERMISSION
+        mgr.setLogOn(true)
+        if (mSdkInitSuccess == Constants.ERROR_INIT_SUCCESS) syncViture3dButton()
+    }
+
+    private fun registerVitureCallbackIfNeeded() {
+        val mgr = mArManager ?: return
+        val callback = mArCallback ?: return
+        if (vitureCallbackRegistered) return
+        try {
+            mgr.registerCallback(callback)
+            vitureCallbackRegistered = true
+        } catch (e: Throwable) {
+            android.util.Log.w("XPlayer2", "VITURE registerCallback failed: ${e.message}")
+        }
+    }
+
+    private fun unregisterVitureCallbackIfNeeded() {
+        val mgr = mArManager ?: return
+        val callback = mArCallback ?: return
+        if (!vitureCallbackRegistered) return
+        try {
+            mgr.unregisterCallback(callback)
+        } catch (_: Throwable) {
+        } finally {
+            vitureCallbackRegistered = false
+        }
+    }
+
+    private fun showVitureInitErrorToast(code: Int) {
+        val msg = when (code) {
+            VITURE_INIT_STATE_IDLE -> "VITURE SDK did not initialize"
+            Constants.ERROR_INIT_NO_PERMISSION -> "VITURE SDK initialization failed"
+            Constants.ERROR_INIT_NO_DEVICE -> "VITURE glasses not connected"
+            Constants.ERROR_INIT_UNKOWN -> "VITURE SDK initialization failed"
+            else -> "VITURE SDK unavailable"
+        }
+        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun resetVitureManager() {
+        unregisterVitureCallbackIfNeeded()
+        mArManager = null
+        mArCallback = null
+        mSdkInitSuccess = VITURE_INIT_STATE_IDLE
+        viturePermissionDialogPending = false
+        vitureInitRetryToken++
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -465,7 +787,8 @@ class PlayerActivity : AppCompatActivity() {
                 // Use sourceUri for recents lookup (not resolvedStreamUri which may be different for extracted streams)
                 val requestedStart = intent?.getLongExtra(EXTRA_START_POSITION_MS, -1L) ?: -1L
                 val store = RecentStore(this)
-                val recent = store.find((sourceUri ?: uri).toString())
+                val recent = listOfNotNull(recentPrimaryUri, recentFallbackUri, sourceUri, uri)
+                    .firstNotNullOfOrNull { candidate -> store.find(candidate.toString()) }
                 val resumePos = when {
                     requestedStart >= 0L -> requestedStart
                     (recent?.lastPositionMs ?: 0L) > 0L -> recent!!.lastPositionMs
@@ -600,8 +923,12 @@ class PlayerActivity : AppCompatActivity() {
         super.onPause()
         saveProgress()
         glView?.onPause()
+        // Keep callback alive while the system permission dialog is on top so init completion isn't missed.
+        if (!viturePermissionDialogPending) {
+            unregisterVitureCallbackIfNeeded()
+        }
         // If Presentation is active, keep playing when phone screen is turned off/locked
-        if (presentation == null) {
+        if (presentation == null && !isVitureModeSwitchInProgress()) {
             player?.playWhenReady = false
         }
         // Foreground service: keep if external playback is active, otherwise stop
@@ -612,7 +939,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onStop()
         saveProgress()
         // If external Presentation is active or activity is on external display, keep the player alive to continue playback on the secondary display
-        if (!(presentation != null || isOnExternalDisplay())) {
+        if (!(presentation != null || isOnExternalDisplay() || isVitureModeSwitchInProgress())) {
             player?.clearVideoSurface()
             player?.release()
             player = null
@@ -681,8 +1008,46 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        vitureRecoveryToken++
         hideSystemBars()
         glView?.onResume()
+        val mgr = mArManager
+        // Re-register callback when resuming an existing player session.
+        if (mgr != null && mArCallback != null) {
+            registerVitureCallbackIfNeeded()
+        }
+        if (viturePermissionDialogPending && pendingVitureToggle) {
+            val token = vitureInitRetryToken
+            mainHandler.postDelayed({
+                if (token != vitureInitRetryToken || !pendingVitureToggle) return@postDelayed
+                try {
+                    val resumeMgr = mArManager ?: ArManager.getInstance(this)
+                    mArManager = resumeMgr
+                    mSdkInitSuccess = resumeMgr.init()
+                    viturePermissionDialogPending = mSdkInitSuccess == Constants.ERROR_INIT_NO_PERMISSION
+                    if (mSdkInitSuccess == Constants.ERROR_INIT_SUCCESS) {
+                        handle3DButtonClickInternal(token, 0, false)
+                    } else if (!viturePermissionDialogPending) {
+                        pendingVitureToggle = false
+                        showVitureInitErrorToast(mSdkInitSuccess)
+                    }
+                } catch (e: Throwable) {
+                    android.util.Log.w("XPlayer2", "VITURE permission resume failed: ${e.message}")
+                    pendingVitureToggle = false
+                    viturePermissionDialogPending = false
+                    mSdkInitSuccess = VITURE_INIT_STATE_IDLE
+                    showVitureInitErrorToast(mSdkInitSuccess)
+                }
+            }, VITURE_INIT_WAIT_DELAY_MS)
+            return
+        }
+        if (pendingVitureToggle) {
+            val token = vitureInitRetryToken
+            mainHandler.postDelayed({
+                if (token != vitureInitRetryToken) return@postDelayed
+                handle3DButtonClickInternal(token, 0, false)
+            }, VITURE_INIT_WAIT_DELAY_MS)
+        }
         // Resume playback if needed
         player?.playWhenReady = true
         // Try to show Presentation on external display
@@ -701,13 +1066,40 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        pendingVitureToggle = false
         if (currentInstance == this) {
             currentInstance = null
         }
         saveProgress()
+        unregisterVitureCallbackIfNeeded()
+        mArManager = null
+        mArCallback = null
+        mSdkInitSuccess = VITURE_INIT_STATE_IDLE
+        viturePermissionDialogPending = false
         player?.release()
         player = null
         stopPlaybackService()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        sourceUri?.let { outState.putString(STATE_SOURCE_URI, it.toString()) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val incoming = intent.data
+        if (incoming != null) {
+            sourceUri = incoming
+            lastKnownSourceUri = incoming.toString()
+            getSharedPreferences(PREFS_PLAYER, MODE_PRIVATE).edit {
+                putString(PREF_LAST_SOURCE_URI, incoming.toString())
+            }
+            persistSourceUriPermissionIfPossible(incoming)
+        }
+        recentPrimaryUri = intent.getStringExtra(EXTRA_RECENT_URI)?.let(Uri::parse) ?: sourceUri
+        recentFallbackUri = intent.getStringExtra(EXTRA_RECENT_FALLBACK_URI)?.let(Uri::parse)
     }
 
     private fun updatePlaybackService() {
@@ -943,20 +1335,22 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun saveProgress() {
-        val uri = sourceUri ?: return
+        val playbackUri = sourceUri ?: return
         val exo = player ?: return
         val position = exo.currentPosition.coerceAtLeast(0L)
         val duration = exo.duration.takeIf { it > 0 } ?: 0L
+        val recentUri = recentPrimaryUri ?: playbackUri
         // Prefer Media3 metadata title if available; fallback to display name/lastPath
         val title = bestTitleForCurrent()
         // Extract optional frame-packing information from URI query (?frame-packing=3|4)
         val framePacking: Int? = try {
-            uri.getQueryParameter("frame-packing")?.toIntOrNull()
+            playbackUri.getQueryParameter("frame-packing")?.toIntOrNull()
         } catch (_: Throwable) {
             null
         }
         val entry = RecentEntry(
-            uri = uri.toString(),
+            uri = recentUri.toString(),
+            fallbackUri = recentFallbackUri?.toString()?.takeIf { it != recentUri.toString() },
             title = title,
             lastPositionMs = position,
             durationMs = duration,
@@ -964,7 +1358,7 @@ class PlayerActivity : AppCompatActivity() {
             framePacking = framePacking,
             sbsEnabled = getStereoSbs(),
             sbsShiftEnabled = sbsShiftEnabled,
-            sourceType = RecentEntry.detectSourceType(uri)
+            sourceType = RecentEntry.detectSourceType(recentUri)
         )
         RecentStore(this).upsert(entry)
     }
