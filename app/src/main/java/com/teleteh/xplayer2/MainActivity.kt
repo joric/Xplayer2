@@ -24,7 +24,6 @@ import android.view.KeyEvent
 import android.widget.Button
 import android.widget.EditText
 import android.view.ViewGroup
-import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 
 
@@ -50,6 +49,16 @@ class MainActivity : AppCompatActivity() {
         return false
     }
 
+    private fun findRecyclerItemView(focused: View, recyclerView: RecyclerView): View? {
+        var current: View? = focused
+        while (current != null) {
+            val parent = current.parent
+            if (parent === recyclerView) return current
+            current = if (parent is View) parent else null
+        }
+        return null
+    }
+
     private fun shouldReturnToTabsOnUp(fragmentView: View): Boolean {
         val focused = currentFocus ?: return false
 
@@ -65,9 +74,11 @@ class MainActivity : AppCompatActivity() {
         val recyclerView: RecyclerView? = fragmentView.findViewById<RecyclerView?>(R.id.rvRecent)
             ?: fragmentView.findViewById<RecyclerView?>(R.id.rvNetwork)
         if (recyclerView != null && isDescendantOf(focused, recyclerView)) {
-            val lm = recyclerView.layoutManager as? LinearLayoutManager
-            val atTop = lm?.findFirstVisibleItemPosition()?.let { it <= 0 } == true
-            if (atTop) return true
+            val focusedItemView = findRecyclerItemView(focused, recyclerView)
+            if (focusedItemView == null) return true
+
+            val focusedPosition = recyclerView.getChildAdapterPosition(focusedItemView)
+            if (focusedPosition == 0) return true
         }
 
         return false

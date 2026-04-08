@@ -63,4 +63,18 @@
             android:text="Subtitle" />
     </LinearLayout>
 
+    <ImageButton
+        android:id="@+id/btnDelete"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
+        android:layout_marginStart="8dp"
+        android:background="?android:attr/selectableItemBackgroundBorderless"
+        android:contentDescription="@string/delete"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:clickable="true"
+        android:nextFocusLeft="@id/tvTitle"
+        android:src="@android:drawable/ic_menu_delete"
+        android:visibility="gone" />
+
 </LinearLayout>

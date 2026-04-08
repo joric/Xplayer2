@@ -53,7 +53,13 @@ class NetworkFragment : Fragment(R.layout.fragment_network) {
         rv = view.findViewById(R.id.rvNetwork)
         val fab: FloatingActionButton = view.findViewById(R.id.fabAddShare)
 
-        adapter = NetworkAdapter(onClick = { item -> onItemClick(item) })
+        adapter = NetworkAdapter(
+            onClick = { item -> onItemClick(item) },
+            onDelete = { share ->
+                smbStorage.remove(share.name)
+                reloadShares()
+            }
+        )
         rv.layoutManager = LinearLayoutManager(requireContext())
         rv.adapter = adapter
 
