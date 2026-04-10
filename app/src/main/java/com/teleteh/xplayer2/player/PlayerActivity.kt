@@ -1,4 +1,4 @@
-    package com.teleteh.xplayer2.player
+package com.teleteh.xplayer2.player
 
 import android.content.Intent
 import android.content.res.ColorStateList
@@ -126,6 +126,7 @@ class PlayerActivity : AppCompatActivity() {
     private var btnSbsRef: MaterialButton? = null
     private var btnShiftRef: MaterialButton? = null
     private var btn3dRef: MaterialButton? = null
+    private var btnResizeModeRef: MaterialButton? = null
     // VITURE glasses SDK
     private var mArManager: ArManager? = null
     private var mArCallback: ArCallback? = null
@@ -141,6 +142,10 @@ class PlayerActivity : AppCompatActivity() {
     private var audioMenuRight: LinearLayout? = null
     // Debug flag: whether vertical SBS shift is enabled (not persisted)
     private var sbsShiftEnabled: Boolean = false
+
+    // resize modes
+    private var resizeMode = 0
+
     // No need for reentrancy guard when we don't call show/hide inside listener
     private var lastVideoWidth: Int = 0
     private var lastVideoHeight: Int = 0
@@ -266,6 +271,7 @@ class PlayerActivity : AppCompatActivity() {
             }
         overlay.bringToFront()
         val btnBack = overlay.findViewById<MaterialButton>(R.id.btnBack)
+        val btnResizeMode = overlay.findViewById<MaterialButton>(R.id.btnResizeMode)
         val btnSbs = overlay.findViewById<MaterialButton>(R.id.btnSbs)
         val btnShift = overlay.findViewById<MaterialButton>(R.id.btnShift)
         val btn3d = overlay.findViewById<MaterialButton>(R.id.btn3d)
@@ -273,6 +279,7 @@ class PlayerActivity : AppCompatActivity() {
         btnSbsRef = btnSbs
         btnShiftRef = btnShift
         btn3dRef = btn3d
+        btnResizeModeRef = btnResizeMode
         titleCenterView = overlay.findViewById(R.id.tvTitleCenter)
         // Audio menu containers
         audioMenuRoot = overlay.findViewById(R.id.audioMenuRoot)
@@ -288,6 +295,14 @@ class PlayerActivity : AppCompatActivity() {
             toggleStereoMode()
             applySbsButtonVisual(btnSbs)
         }
+
+        // resize mode button
+        btnResizeMode.setOnClickListener {
+            resizeMode = (resizeMode + 1) % 7  // Cycle 0,1,2,...
+            applyResizeMode();
+            saveProgress()
+        }
+
         // Shift debug button
         btnShift.isCheckable = true
         btnShift.isChecked = sbsShiftEnabled
@@ -801,6 +816,7 @@ class PlayerActivity : AppCompatActivity() {
                 sbsShiftEnabled = recent?.sbsShiftEnabled ?: false
                 btnShiftRef?.isChecked = sbsShiftEnabled
                 applySbsShiftIfNeeded()
+
                 // Initialize SBS state per item
                 val dm = resources.displayMetrics
                 val ultraWide = (dm.widthPixels.toFloat() / (dm.heightPixels.takeIf { it > 0 }
@@ -814,6 +830,12 @@ class PlayerActivity : AppCompatActivity() {
                 glView?.setDuplicateMonoToSbs(false)
                 // Refresh button visuals to reflect initial per-item state
                 btnSbsRef?.let { applySbsButtonVisual(it) }
+
+                // Initialize resizeMode
+                resizeMode = recent?.resizeMode ?: 0
+                android.util.Log.i("XPlayer2", "Loading resize mode: ${resizeMode}, recent: ${recent?.resizeMode}")
+                applyResizeMode()
+
                 exo.play()
                 // Listen for metadata/title updates to reflect in UI and Recent
                 exo.addListener(object : Player.Listener {
@@ -1358,9 +1380,12 @@ class PlayerActivity : AppCompatActivity() {
             framePacking = framePacking,
             sbsEnabled = getStereoSbs(),
             sbsShiftEnabled = sbsShiftEnabled,
-            sourceType = RecentEntry.detectSourceType(recentUri)
+            sourceType = RecentEntry.detectSourceType(recentUri),
+            resizeMode = resizeMode,
         )
         RecentStore(this).upsert(entry)
+
+        android.util.Log.w("XPlayer2", "Saving Progress, resizeMode is ${resizeMode}")
     }
 
     private fun bestTitleForCurrent(): String {
@@ -1431,6 +1456,11 @@ class PlayerActivity : AppCompatActivity() {
     private fun setStereoSbs(value: Boolean) {
         val prefs = getSharedPreferences("player_prefs", MODE_PRIVATE)
         prefs.edit { putBoolean("stereo_sbs", value) }
+    }
+
+    private fun applyAspectRatio() {
+        //aspectRatioEnabled
+
     }
 
     // --- SBS vertical shift to approximate 16:9 without bars ---
@@ -1575,6 +1605,23 @@ class PlayerActivity : AppCompatActivity() {
         updateSbsUi()
         applySbsShiftIfNeeded()
         saveProgress()
+    }
+
+    fun applyResizeMode() {
+        // Update button text to show current mode
+        btnResizeModeRef?.text = when (resizeMode) {
+            0 -> "Auto"
+            1 -> "16:9"
+            2 -> "4:3"
+            3 -> "21:9"
+            4 -> "32:9"
+            5 -> "1:1"
+            6 -> "2.39:1"
+            else -> "Auto"
+        }
+        glView?.updateResizeMode(resizeMode)   // Update the GL view
+
+        android.util.Log.i("XPlayer2", "Applying resize mode: ${resizeMode}")
     }
 
     fun isShiftEnabled(): Boolean = sbsShiftEnabled

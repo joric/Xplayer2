@@ -23,7 +23,8 @@ data class RecentEntry(
     val framePacking: Int? = null,
     val sbsEnabled: Boolean? = null,
     val sbsShiftEnabled: Boolean? = null,
-    val sourceType: SourceType? = null
+    val sourceType: SourceType? = null,
+    val resizeMode: Int,
 ) {
     fun uriObj(): Uri = Uri.parse(uri)
     fun fallbackUriObj(): Uri? = fallbackUri?.let(Uri::parse)

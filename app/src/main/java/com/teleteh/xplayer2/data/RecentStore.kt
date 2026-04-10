@@ -85,7 +85,8 @@ class RecentStore(private val context: Context) {
             framePacking = if (has("framePacking") && !isNull("framePacking")) optInt("framePacking") else null,
             sbsEnabled = if (has("sbsEnabled") && !isNull("sbsEnabled")) optBoolean("sbsEnabled") else null,
             sbsShiftEnabled = if (has("sbsShiftEnabled") && !isNull("sbsShiftEnabled")) optBoolean("sbsShiftEnabled") else null,
-            sourceType = sourceType
+            sourceType = sourceType,
+            resizeMode = optInt("resizeMode", 0),
         )
     } catch (_: Throwable) {
         null
@@ -102,6 +103,7 @@ class RecentStore(private val context: Context) {
         if (sbsEnabled != null) put("sbsEnabled", sbsEnabled)
         if (sbsShiftEnabled != null) put("sbsShiftEnabled", sbsShiftEnabled)
         if (sourceType != null) put("sourceType", sourceType.name)
+        put("resizeMode", resizeMode)
     }
 
     private fun ensureNiceTitle(entry: RecentEntry): String {

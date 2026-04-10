@@ -16,10 +16,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-/**
- * GLSurfaceView that accepts video frames from ExoPlayer via SurfaceTexture
- * and renders OU (Over-Under) frames as SBS (Side-By-Side) on screen when enabled.
- */
 class OuToSbsGlView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null
@@ -31,14 +27,12 @@ class OuToSbsGlView @JvmOverloads constructor(
         setEGLContextClientVersion(2)
         renderer = OuToSbsRenderer()
         setRenderer(renderer)
-        // Render only when we receive a new video frame
         renderMode = RENDERMODE_WHEN_DIRTY
     }
 
     fun setOnSurfaceReadyListener(listener: (Surface) -> Unit) {
         renderer.onSurfaceReady = listener
         renderer.surface?.let { surf ->
-            // Ensure callback is on main thread
             if (Looper.myLooper() == Looper.getMainLooper()) {
                 listener(surf)
             } else {
@@ -52,10 +46,11 @@ class OuToSbsGlView @JvmOverloads constructor(
         requestRender()
     }
 
-    /**
-     * When SBS is disabled, optionally duplicate the mono frame side-by-side (left and right halves).
-     * Useful for stereo displays to watch 2D content.
-     */
+    fun setSourceIsSbs(enabled: Boolean) {
+        renderer.sourceIsSbs.set(enabled)
+        requestRender()
+    }
+
     fun setDuplicateMonoToSbs(enabled: Boolean) {
         renderer.duplicateMonoToSbs.set(enabled)
         requestRender()
@@ -66,12 +61,7 @@ class OuToSbsGlView @JvmOverloads constructor(
         requestRender()
     }
 
-    /**
-     * Set per-eye vertical shift in normalized texture space (0..1 of full texture height).
-     * Positive value lowers the image on screen for that eye.
-     */
     fun setEyeVerticalShiftNormalized(left: Float, right: Float) {
-        // Clamp to safe range then forward to renderer on GL thread
         val l = left.coerceIn(-0.25f, 0.25f)
         val r = right.coerceIn(-0.25f, 0.25f)
         queueEvent {
@@ -80,18 +70,11 @@ class OuToSbsGlView @JvmOverloads constructor(
         requestRender()
     }
 
-    /**
-     * Convenience: set per-eye vertical shift in pixels relative to a reference full-frame height.
-     */
     fun setEyeVerticalShiftPx(leftPx: Float, rightPx: Float, referenceHeightPx: Float) {
         if (referenceHeightPx <= 0f) return
         setEyeVerticalShiftNormalized(leftPx / referenceHeightPx, rightPx / referenceHeightPx)
     }
 
-    /**
-     * Apply opposite shifts to left/right eyes with a single positive amount (in pixels):
-     * bottom-half eye goes DOWN, top-half eye goes UP. Respects current swapEyes mapping.
-     */
     fun setOppositeVerticalShiftPx(amountPx: Float, referenceHeightPx: Float) {
         if (referenceHeightPx <= 0f) return
         val amt = (amountPx / referenceHeightPx).coerceIn(0f, 0.25f)
@@ -106,12 +89,6 @@ class OuToSbsGlView @JvmOverloads constructor(
         requestRender()
     }
 
-    /**
-     * Set per-eye letterbox padding as a pixel amount relative to a reference full-frame height.
-     * The same positive amount is applied, but for the eye sampling the top half the bar is added on TOP,
-     * and for the eye sampling the bottom half the bar is added on BOTTOM. This preserves 16:9 per eye
-     * when the OU source lacks top/bottom black bars.
-     */
     fun setPerEyeLetterboxPx(amountPx: Float, referenceHeightPx: Float) {
         if (referenceHeightPx <= 0f) return
         val frac = (amountPx / referenceHeightPx).coerceIn(0f, 0.25f)
@@ -119,6 +96,14 @@ class OuToSbsGlView @JvmOverloads constructor(
             renderer.perEyePadFrac = frac
         }
         requestRender()
+    }
+
+    fun updateResizeMode(mode: Int) {
+        renderer.updateResizeMode(mode)
+    }
+
+    fun updateVideoAspectRatio(width: Int, height: Int) {
+        renderer.updateVideoAspectRatio(width, height)
     }
 
     private inner class OuToSbsRenderer : Renderer, SurfaceTexture.OnFrameAvailableListener {
@@ -129,6 +114,7 @@ class OuToSbsGlView @JvmOverloads constructor(
 
         var onSurfaceReady: ((Surface) -> Unit)? = null
         val sbsEnabled = AtomicBoolean(false)
+        val sourceIsSbs = AtomicBoolean(false)  // NEW: true if source is already SBS
         val swapEyes = AtomicBoolean(false)
         val duplicateMonoToSbs = AtomicBoolean(false)
 
@@ -139,17 +125,16 @@ class OuToSbsGlView @JvmOverloads constructor(
         private var uTexMatrixLoc = 0
         private var uScaleLoc = 0
         private var uOffsetLoc = 0
-        // Normalized per-eye vertical shift (in full texture space, 0..1). Positive value intends to lower the image on screen.
-        // These are applied symmetrically depending on whether the eye samples from top or bottom half.
+
         @Volatile private var leftEyeShiftNorm: Float = 0f
         @Volatile private var rightEyeShiftNorm: Float = 0f
-        // Fraction of per-eye vertical letterbox relative to full-frame height (0..~0.25)
         @Volatile var perEyePadFrac: Float = 0f
         private val texMatrix = FloatArray(16)
 
-        // Fullscreen quad (two triangles)
-        private val vertexData: FloatBuffer = floatBufferOf(
-            // X,  Y,   U,  V (v=0 at bottom, v=1 at top)
+        @Volatile private var resizeMode: Int = 0
+        @Volatile private var videoAspectRatio: Float = 16f / 9f
+
+        private val fullVertexData: FloatBuffer = floatBufferOf(
             -1f, -1f, 0f, 0f,
             1f, -1f, 1f, 0f,
             -1f, 1f, 0f, 1f,
@@ -171,7 +156,6 @@ class OuToSbsGlView @JvmOverloads constructor(
             }
             surface = Surface(surfaceTexture)
             val surf = surface!!
-            // Post callback to main thread to avoid touching ExoPlayer on GL thread
             Handler(Looper.getMainLooper()).post {
                 onSurfaceReady?.invoke(surf)
             }
@@ -197,95 +181,165 @@ class OuToSbsGlView @JvmOverloads constructor(
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
             GLES20.glUniform1i(uTexLoc, 0)
 
-            vertexData.position(0)
-            GLES20.glEnableVertexAttribArray(aPosLoc)
-            GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, vertexData)
-
-            vertexData.position(2)
-            GLES20.glEnableVertexAttribArray(aTexLoc)
-            GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, vertexData)
-
             if (sbsEnabled.get()) {
-                // Map OU -> SBS. Default: Left <- BOTTOM, Right <- TOP
-                val swap = swapEyes.get()
-                val leftFromTop = if (swap) true else false
-                val rightFromTop = if (swap) false else true
-                drawHalf(left = true, fromTopHalf = leftFromTop)
-                drawHalf(left = false, fromTopHalf = rightFromTop)
-            } else {
-                // Mono: either full screen, or duplicate into left/right halves for stereo displays
-                if (duplicateMonoToSbs.get()) {
-                    drawMonoIntoHalf(left = true)
-                    drawMonoIntoHalf(left = false)
+                if (sourceIsSbs.get()) {
+                    // Source is already SBS - just display left/right halves
+                    drawSbsSource()
                 } else {
-                    drawFull()
+                    // Source is OU - convert to SBS
+                    drawOuToSbs()
+                }
+            } else {
+                if (duplicateMonoToSbs.get()) {
+                    drawMonoToSbs()
+                } else {
+                    drawFullScreen()
                 }
             }
 
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
         }
 
-        private fun drawFull() {
-            // Use full texture (scale=1,1 offset=0,0)
-            GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
-            GLES20.glUniform2f(uScaleLoc, 1f, 1f)
-            GLES20.glUniform2f(uOffsetLoc, 0f, 0f)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        private fun drawOuToSbs() {
+            val swap = swapEyes.get()
+            val leftFromTop = if (swap) true else false
+            val rightFromTop = if (swap) false else true
+            drawEyeFromOu(left = true, fromTopHalf = leftFromTop)
+            drawEyeFromOu(left = false, fromTopHalf = rightFromTop)
         }
 
-        private fun drawMonoIntoHalf(left: Boolean) {
+        private fun drawSbsSource() {
+            val swap = swapEyes.get()
+            // For SBS source, each eye gets half the texture horizontally
+            drawEyeFromSbs(left = true, useRightHalf = swap)
+            drawEyeFromSbs(left = false, useRightHalf = !swap)
+        }
+
+        private fun drawFullScreen() {
             val viewport = IntArray(4)
             GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
-            val x = if (left) viewport[0] else viewport[0] + viewport[2] / 2
-            val y = viewport[1]
-            val w = viewport[2] / 2
-            val h = viewport[3]
-            // Draw full texture into the half viewport
+            val targetAspect = getTargetAspectRatio(resizeMode, videoAspectRatio)
+            val (x, y, w, h) = calculateFitRect(viewport[0], viewport[1], viewport[2], viewport[3], targetAspect)
+
             GLES20.glViewport(x, y, w, h)
-            GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
-            GLES20.glUniform2f(uScaleLoc, 1f, 1f)
-            GLES20.glUniform2f(uOffsetLoc, 0f, 0f)
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            drawTexture(1f, 1f, 0f, 0f)
             GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
         }
 
-        private fun drawHalf(left: Boolean, fromTopHalf: Boolean) {
-            // Adjust viewport to left or right half
-            // Viewport will be set by caller via glViewport; here we change temporarily
-            // We need current viewport size; since we don't have it, compute via glGetIntegerv
+        private fun drawMonoToSbs() {
             val viewport = IntArray(4)
             GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
-            val x = if (left) viewport[0] else viewport[0] + viewport[2] / 2
-            val y = viewport[1]
-            val w = viewport[2] / 2
-            val h = viewport[3]
-            // Apply per-eye letterbox by shrinking the half-viewport vertically and anchoring:
-            // - Top-half eye: anchor to TOP (bar appears at BOTTOM)
-            // - Bottom-half eye: anchor to BOTTOM (bar appears at TOP)
-            // Use provided per-eye pad fraction (relative to source half height) scaled to current half-viewport
+            val eyeWidth = viewport[2] / 2
+            val targetAspect = getTargetAspectRatio(resizeMode, videoAspectRatio)
+
+            // Left eye
+            val (lx, ly, lw, lh) = calculateFitRect(viewport[0], viewport[1], eyeWidth, viewport[3], targetAspect)
+            GLES20.glViewport(lx, ly, lw, lh)
+            drawTexture(1f, 1f, 0f, 0f)
+
+            // Right eye
+            val (rx, ry, rw, rh) = calculateFitRect(viewport[0] + eyeWidth, viewport[1], eyeWidth, viewport[3], targetAspect)
+            GLES20.glViewport(rx, ry, rw, rh)
+            drawTexture(1f, 1f, 0f, 0f)
+
+            GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
+        }
+
+        private fun drawEyeFromOu(left: Boolean, fromTopHalf: Boolean) {
+            val viewport = IntArray(4)
+            GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
+
+            val eyeWidth = viewport[2] / 2
+            val eyeX = if (left) viewport[0] else viewport[0] + eyeWidth
+            val targetAspect = getTargetAspectRatio(resizeMode, videoAspectRatio)
+
+            val (x, y, w, h) = calculateFitRect(eyeX, viewport[1], eyeWidth, viewport[3], targetAspect)
+
             val pad = (perEyePadFrac * h).toInt().coerceAtMost(h - 1)
-            // Top-half anchored to top: keep top edge, so shift y up by pad
-            // Bottom-half anchored to bottom: keep bottom edge, so y stays
             val yAdj = if (fromTopHalf) y + pad else y
             val hAdj = h - pad
+
             GLES20.glViewport(x, yAdj, w, hAdj)
 
-            // Apply SurfaceTexture transform and crop to top/bottom half via uniforms
-            // With v origin at bottom: top half starts at 0.5, bottom half at 0.0
-            GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
-            GLES20.glUniform2f(uScaleLoc, 1f, 0.5f)
-            // Choose per-eye vertical shift. Convention: positive shift lowers the image on screen.
+            // For OU source, sample from top or bottom half of texture
             val shift = if (left) leftEyeShiftNorm else rightEyeShiftNorm
-            // For bottom half, increasing offset samples higher in the source, making the image appear lower on screen.
-            // For top half, decreasing offset samples lower in the source, likewise lowering image on screen.
             val base = if (fromTopHalf) 0.5f else 0f
             val offsetY = if (fromTopHalf) base - shift else base + shift
-            GLES20.glUniform2f(uOffsetLoc, 0f, offsetY)
 
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            drawTexture(1f, 0.5f, 0f, offsetY)
 
-            // Restore full viewport for next draw step
             GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
+        }
+
+        private fun drawEyeFromSbs(left: Boolean, useRightHalf: Boolean) {
+            val viewport = IntArray(4)
+            GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, viewport, 0)
+
+            val eyeWidth = viewport[2] / 2
+            val eyeX = if (left) viewport[0] else viewport[0] + eyeWidth
+            val targetAspect = getTargetAspectRatio(resizeMode, videoAspectRatio)
+
+            val (x, y, w, h) = calculateFitRect(eyeX, viewport[1], eyeWidth, viewport[3], targetAspect)
+
+            GLES20.glViewport(x, y, w, h)
+
+            // For SBS source, sample from left or right half of texture
+            val offsetX = if (useRightHalf) 0.5f else 0f
+            drawTexture(0.5f, 1f, offsetX, 0f)
+
+            GLES20.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
+        }
+
+        private fun drawTexture(scaleX: Float, scaleY: Float, offsetX: Float, offsetY: Float) {
+            GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
+            GLES20.glUniform2f(uScaleLoc, scaleX, scaleY)
+            GLES20.glUniform2f(uOffsetLoc, offsetX, offsetY)
+            fullVertexData.position(0)
+            GLES20.glEnableVertexAttribArray(aPosLoc)
+            GLES20.glVertexAttribPointer(aPosLoc, 2, GLES20.GL_FLOAT, false, 16, fullVertexData)
+            fullVertexData.position(2)
+            GLES20.glEnableVertexAttribArray(aTexLoc)
+            GLES20.glVertexAttribPointer(aTexLoc, 2, GLES20.GL_FLOAT, false, 16, fullVertexData)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        }
+
+        private fun calculateFitRect(x: Int, y: Int, width: Int, height: Int, targetAspect: Float): Rect {
+            val viewAspect = width.toFloat() / height.toFloat()
+
+            return if (viewAspect > targetAspect) {
+                val newWidth = (height * targetAspect).toInt()
+                val offsetX = (width - newWidth) / 2
+                Rect(x + offsetX, y, newWidth, height)
+            } else {
+                val newHeight = (width / targetAspect).toInt()
+                val offsetY = (height - newHeight) / 2
+                Rect(x, y + offsetY, width, newHeight)
+            }
+        }
+
+        private fun getTargetAspectRatio(mode: Int, videoAspect: Float): Float {
+            return when (mode) {
+                0 -> videoAspect
+                1 -> 16f / 9f
+                2 -> 4f / 3f
+                3 -> 21f / 9f
+                4 -> 32f / 9f
+                5 -> 1f / 1f
+                6 -> 2.39f / 1f
+                else -> videoAspect
+            }
+        }
+
+        fun updateResizeMode(mode: Int) {
+            resizeMode = mode
+            requestRender()
+        }
+
+        fun updateVideoAspectRatio(width: Int, height: Int) {
+            if (height > 0) {
+                videoAspectRatio = width.toFloat() / height.toFloat()
+                requestRender()
+            }
         }
 
         fun setEyeShiftNormalized(left: Float, right: Float) {
@@ -294,7 +348,6 @@ class OuToSbsGlView @JvmOverloads constructor(
         }
 
         override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
-            // Called on Binder thread; request render on GL thread
             this@OuToSbsGlView.requestRender()
         }
 
@@ -302,26 +355,10 @@ class OuToSbsGlView @JvmOverloads constructor(
             val tex = IntArray(1)
             GLES20.glGenTextures(1, tex, 0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex[0])
-            GLES20.glTexParameteri(
-                GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_MIN_FILTER,
-                GLES20.GL_LINEAR
-            )
-            GLES20.glTexParameteri(
-                GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_MAG_FILTER,
-                GLES20.GL_LINEAR
-            )
-            GLES20.glTexParameteri(
-                GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_WRAP_S,
-                GLES20.GL_CLAMP_TO_EDGE
-            )
-            GLES20.glTexParameteri(
-                GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                GLES20.GL_TEXTURE_WRAP_T,
-                GLES20.GL_CLAMP_TO_EDGE
-            )
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 0)
             return tex[0]
         }
@@ -361,6 +398,8 @@ class OuToSbsGlView @JvmOverloads constructor(
     }
 }
 
+private data class Rect(val x: Int, val y: Int, val width: Int, val height: Int)
+
 private fun floatBufferOf(vararg floats: Float): FloatBuffer =
     ByteBuffer.allocateDirect(floats.size * 4)
         .order(ByteOrder.nativeOrder())
@@ -389,8 +428,6 @@ uniform mat4 uTexMatrix;
 uniform vec2 uScale;
 uniform vec2 uOffset;
 void main() {
-  // Apply SurfaceTexture transform first to account for decoder orientation,
-  // then crop to top/bottom half in the transformed texture space
   vec2 tc = (uTexMatrix * vec4(vTexCoord, 0.0, 1.0)).xy;
   tc = tc * uScale + uOffset;
   gl_FragColor = texture2D(uTexture, tc);
